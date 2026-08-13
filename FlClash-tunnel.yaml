@@ -1,0 +1,23 @@
+# 跳板机隧道代理配置（FlClash/Mihomo 格式）
+# 仅包含一个 SOCKS5 节点：本机 127.0.0.1:1080 的隧道代理
+# 使用方法：在 FlClash 中 "添加配置" -> 选 "本地文件" / 直接拖入，启用后浏览器流量会经此节点出去
+
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: info
+
+proxies:
+  - name: "tunnel-local"
+    type: socks5
+    server: 127.0.0.1
+    port: 1080
+
+proxy-groups:
+  - name: "Proxy"
+    type: select
+    proxies:
+      - "tunnel-local"
+
+rules:
+  - MATCH,Proxy
