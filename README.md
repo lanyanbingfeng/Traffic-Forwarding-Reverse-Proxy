@@ -20,6 +20,8 @@
 ```
 ├── main.go                    # 双端 CLI 入口
 ├── build.ps1                  # Windows 一键编译脚本
+├── start-client.bat           # 本机客户端双击启动脚本（按提示输入跳板机IP）
+├── start-server.bat           # 跳板机服务端双击启动脚本（需管理员运行）
 ├── internal/
 │   ├── transport/             # 53 端口隧道传输层（帧编解码、连接复用、可选加密）
 │   └── socks/                 # SOCKS5 代理层（本地监听 / 服务端会话处理）
@@ -71,7 +73,9 @@ go build -trimpath -ldflags "-s -w -X main.defaultMode=server"  -o tunnel-server
 
 ### 第 4 步：部署并运行
 
-把 `tunnel-server` 放到**跳板机**（局域网内能出网的主机），`tunnel-client` 放到**本机**，然后：
+把 `tunnel-server` 放到**跳板机**（局域网内能出网的主机），`tunnel-client` 放到**本机**。
+
+**方式 A：命令行（任意系统）**
 
 ```bash
 # 跳板机（管理员/root 权限）
@@ -80,6 +84,15 @@ sudo ./tunnel-server -listen 0.0.0.0:53 -key 你的口令
 # 本机（连到跳板机的局域网 IP）
 ./tunnel-client -server 192.168.1.100:53 -listen 127.0.0.1:1080 -key 你的口令
 ```
+
+**方式 B：Windows 双击脚本（不用记命令行）**
+
+项目自带两个脚本，双击即可启动：
+
+- **跳板机**：右键 → **以管理员身份运行** `start-server.bat`（监听 53 端口需管理员权限）
+- **本机**：双击 `start-client.bat`，按提示**输入跳板机 IP**（如 `192.168.0.109:53`，直接回车用默认值），即可连上跳板机
+
+> 脚本顶部可设置 `-key` 口令（两端必须一致，无口令留空）。窗口会保持打开显示日志。
 
 ### 第 5 步：本机设置代理
 

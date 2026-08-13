@@ -75,7 +75,8 @@ func HandleSession(s net.Conn) {
 	if err := writeReply(s, repSucceeded); err != nil {
 		return
 	}
-	log.Printf("[server] 已连接目标 %s", addr)
+	// 记录访问日志：证明流量经本机(跳板机)代理出网
+	log.Printf("[server] [访问] 客户端 %s 通过隧道访问 -> %s", s.RemoteAddr(), addr)
 
 	// 5. 双向转发（客户端<->目标）
 	done := make(chan struct{})
