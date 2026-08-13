@@ -1,0 +1,23 @@
+# 编译产物
+dist/
+tunnel-client
+tunnel-client.exe
+tunnel-server
+tunnel-server.exe
+
+# Go 编译缓存/环境
+*.exe
+*.test
+*.out
+
+# 日志与临时文件
+*.log
+*.tmp
+*_test.py
+srv.log
+cli.log
+
+# 本机工具/IDE 数据
+.codebuddy/
+.idea/
+.vscode/
