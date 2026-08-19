@@ -12,6 +12,42 @@ $launcherSource = Join-Path $PSScriptRoot "launch-flclash-server.ps1"
 $backgroundSource = Join-Path $PSScriptRoot "start-flclash-background.bat"
 $consoleSource = Join-Path $PSScriptRoot "start-flclash-console.bat"
 
+function Get-PreferredIPv4Address {
+    function Test-LANIPv4([string]$Address) {
+        $parsed = $null
+        if (-not [Net.IPAddress]::TryParse($Address, [ref]$parsed) -or
+            $parsed.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) {
+            return $false
+        }
+        $bytes = $parsed.GetAddressBytes()
+        return ($bytes[0] -eq 10) -or
+            ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and $bytes[1] -le 31) -or
+            ($bytes[0] -eq 192 -and $bytes[1] -eq 168) -or
+            ($bytes[0] -eq 100 -and $bytes[1] -ge 64 -and $bytes[1] -le 127)
+    }
+    $routes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue |
+        Sort-Object RouteMetric, InterfaceMetric)
+    foreach ($route in $routes) {
+        $candidate = Get-NetIPAddress -AddressFamily IPv4 -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue |
+            Where-Object {
+                Test-LANIPv4 $_.IPAddress
+            } |
+            Select-Object -First 1
+        if ($candidate) {
+            return $candidate.IPAddress
+        }
+    }
+    $fallback = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object {
+            Test-LANIPv4 $_.IPAddress
+        } |
+        Select-Object -First 1
+    if ($fallback) {
+        return $fallback.IPAddress
+    }
+    return $null
+}
+
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -41,8 +77,21 @@ $portOwner = Get-NetTCPConnection -State Listen -LocalPort $listenPort -ErrorAct
 if ($portOwner) {
     throw "TCP $listenPort 已被进程 PID $($portOwner.OwningProcess) 占用，请先停止旧隧道服务或 DNS 服务。"
 }
-$serverIP = Read-Host "客户端访问的跳板机局域网 IP（例如 192.168.0.109）"
-if ([string]::IsNullOrWhiteSpace($serverIP)) { throw "服务器 IP 不能为空。" }
+$detectedIP = Get-PreferredIPv4Address
+if ($detectedIP) {
+    $serverIP = Read-Host "客户端访问的服务端局域网 IP（直接回车使用自动检测值 $detectedIP）"
+    if ([string]::IsNullOrWhiteSpace($serverIP)) { $serverIP = $detectedIP }
+} else {
+    $serverIP = Read-Host "客户端访问的服务端局域网 IPv4 地址（例如 192.168.0.109）"
+}
+$parsedIP = $null
+if ([string]::IsNullOrWhiteSpace($serverIP) -or
+    -not [Net.IPAddress]::TryParse($serverIP, [ref]$parsedIP) -or
+    $parsedIP.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork -or
+    $serverIP -eq "0.0.0.0" -or
+    $serverIP.StartsWith("127.")) {
+    throw "服务端 IP 必须是客户端能够访问的有效局域网 IPv4 地址。"
+}
 $username = Read-Host "SOCKS5 用户名（回车使用 flclash）"
 if ([string]::IsNullOrWhiteSpace($username)) { $username = "flclash" }
 $securePassword = Read-Host "SOCKS5 密码（至少 12 位）" -AsSecureString
@@ -145,6 +194,7 @@ Write-Host "计划任务: $taskName"
 Write-Host "防火墙规则: $firewallRuleName"
 Write-Host "服务配置: $configPath"
 Write-Host "客户端 YAML: $yamlPath" -ForegroundColor Cyan
+Write-Host "YAML 服务端地址: $serverIP`:$listenPort" -ForegroundColor Cyan
 Write-Host "桌面入口: 代理服务-后台运行 / 代理服务-窗口日志" -ForegroundColor Cyan
 Write-Host "证书指纹: $fingerprint"
 Write-Host "请把 YAML 复制到客户端并导入 FlClash。"

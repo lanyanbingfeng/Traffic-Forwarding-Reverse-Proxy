@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 #  Build script (Windows PowerShell)
 #  Usage:
 #     powershell -ExecutionPolicy Bypass -File build.ps1
@@ -10,19 +10,45 @@
 
 $ErrorActionPreference = "Stop"
 
-# Locate the go toolchain: prefer system PATH, fall back to local unzipped dir
+# Locate the Go toolchain: PATH, standard installer path, then local unzipped dir.
 $goCmd = Get-Command go -ErrorAction SilentlyContinue
 if (-not $goCmd) {
-    $localGo = "$env:LOCALAPPDATA\GoToolchain\go\bin\go.exe"
-    if (Test-Path $localGo) {
-        $env:GOROOT = "$env:LOCALAPPDATA\GoToolchain\go"
-        $env:PATH = "$env:GOROOT\bin;$env:PATH"
-        $goCmd = Get-Command go
+    $standardGo = Join-Path $env:ProgramFiles "Go\bin\go.exe"
+    if (Test-Path -LiteralPath $standardGo) {
+        $env:PATH = "$(Split-Path $standardGo);$env:PATH"
+        $goCmd = Get-Command go -ErrorAction SilentlyContinue
     }
 }
 if (-not $goCmd) {
-    Write-Host "[ERROR] go not found. Install Go 1.21+ or unzip it to $env:LOCALAPPDATA\GoToolchain" -ForegroundColor Red
-    exit 1
+    $localGo = "$env:LOCALAPPDATA\GoToolchain\go\bin\go.exe"
+    if (Test-Path -LiteralPath $localGo) {
+        $env:GOROOT = "$env:LOCALAPPDATA\GoToolchain\go"
+        $env:PATH = "$env:GOROOT\bin;$env:PATH"
+        $goCmd = Get-Command go -ErrorAction SilentlyContinue
+    }
+}
+if (-not $goCmd) {
+    $wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+    if (-not $wingetCmd) {
+        Write-Host "[ERROR] 未找到 Go，系统也没有 winget，无法自动安装 Go。" -ForegroundColor Red
+        Write-Host "请从 https://go.dev/dl/ 安装 Go 1.21+ 后重新双击启动入口。"
+        exit 1
+    }
+    Write-Host "==> 首次运行需要 Go，正在通过 winget 自动安装……" -ForegroundColor Yellow
+    & $wingetCmd.Source install --id GoLang.Go --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] winget 安装 Go 失败，退出代码 $LASTEXITCODE。" -ForegroundColor Red
+        exit 1
+    }
+    $standardGo = Join-Path $env:ProgramFiles "Go\bin\go.exe"
+    if (Test-Path -LiteralPath $standardGo) {
+        $env:PATH = "$(Split-Path $standardGo);$env:PATH"
+        $goCmd = Get-Command go -ErrorAction SilentlyContinue
+    }
+    if (-not $goCmd) {
+        Write-Host "[ERROR] Go 已安装，但当前脚本没有找到 go.exe。请重新双击启动入口。" -ForegroundColor Red
+        exit 1
+    }
 }
 
 $outDir = Join-Path $PSScriptRoot "dist"

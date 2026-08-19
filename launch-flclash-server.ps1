@@ -53,6 +53,18 @@ function Ensure-Installed {
     if (-not (Test-Path -LiteralPath $installer)) {
         throw "服务尚未安装，请回到项目目录运行 install-flclash-server.ps1。"
     }
+    $sourceExe = Join-Path $PSScriptRoot "dist\flclash-server.exe"
+    if (-not (Test-Path -LiteralPath $sourceExe)) {
+        $buildScript = Join-Path $PSScriptRoot "build.ps1"
+        if (-not (Test-Path -LiteralPath $buildScript)) {
+            throw "缺少 build.ps1，无法自动编译服务端。"
+        }
+        Write-Host "检测到这是首次 clone，正在自动准备服务端程序……" -ForegroundColor Yellow
+        & $buildScript
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sourceExe)) {
+            throw "自动编译失败，请查看上方错误信息。"
+        }
+    }
     Write-Host "检测到服务尚未完成安装，正在进入首次配置。" -ForegroundColor Yellow
     & $installer
 }
@@ -102,4 +114,3 @@ try {
     Read-Host "按回车键关闭窗口"
     exit 1
 }
-
