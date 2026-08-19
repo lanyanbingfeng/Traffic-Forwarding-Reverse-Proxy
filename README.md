@@ -28,6 +28,8 @@ FlClash(mixed-port 7890) --[SOCKS5 over TLS / TCP 53]--> 跳板机 --> 互联网
 
 客户端电脑不需要 clone 本项目，只需安装 FlClash。把服务器生成的 `FlClash-direct.yaml` 复制到客户端，导入 FlClash，点击启动并开启“系统代理”即可。
 
+如果服务端以前已经安装过旧版本，但桌面没有 YAML，请更新项目后再次双击 `start-flclash-console.bat`。启动器会保留原来的账号、密码和证书，只询问服务端局域网 IP，然后在桌面补生成 `FlClash-direct.yaml`。
+
 ### 服务端一次性安装（Windows）
 
 以下是需要手动控制时的完整安装方式；使用上面的双击入口时会自动完成编译。
