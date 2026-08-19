@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -57,6 +58,9 @@ func LoadConfig(path string) (Config, error) {
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("解析配置 %s: %w", path, err)
 	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return Config{}, fmt.Errorf("解析配置 %s: JSON 末尾包含多余内容", path)
+	}
 	if err := cfg.normalize(filepath.Dir(path)); err != nil {
 		return Config{}, err
 	}
@@ -75,6 +79,9 @@ func (c *Config) normalize(baseDir string) error {
 	}
 	if len(c.Username) > 255 || len(c.Password) > 255 {
 		return errors.New("flclash: username 和 password 不能超过 255 字节")
+	}
+	if len(c.Password) < 12 {
+		return errors.New("flclash: password 至少需要 12 字节")
 	}
 	if c.CertFile == "" {
 		c.CertFile = filepath.Join(baseDir, "server.crt")

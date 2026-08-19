@@ -42,6 +42,50 @@ function Stop-InstalledProxyProcesses {
     }
 }
 
+function Ensure-SourceBuild {
+    $buildScript = Join-Path $PSScriptRoot "build.ps1"
+    if (-not (Test-Path -LiteralPath $buildScript)) { return }
+
+    $sourceExe = Join-Path $PSScriptRoot "dist\flclash-server.exe"
+    $needsBuild = -not (Test-Path -LiteralPath $sourceExe)
+    if (-not $needsBuild) {
+        $artifactTime = (Get-Item -LiteralPath $sourceExe).LastWriteTimeUtc
+        $sourceFiles = @(Get-ChildItem -LiteralPath $PSScriptRoot -Recurse -File -Filter "*.go" -ErrorAction SilentlyContinue)
+        foreach ($extraFile in @("go.mod", "build.ps1")) {
+            $path = Join-Path $PSScriptRoot $extraFile
+            if (Test-Path -LiteralPath $path) { $sourceFiles += Get-Item -LiteralPath $path }
+        }
+        $needsBuild = $null -ne ($sourceFiles | Where-Object { $_.LastWriteTimeUtc -gt $artifactTime } | Select-Object -First 1)
+    }
+    if (-not $needsBuild) { return }
+
+    Write-Host "检测到服务端源码有更新，正在自动编译……" -ForegroundColor Yellow
+    & $buildScript
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sourceExe)) {
+        throw "自动编译失败，请查看上方错误信息。"
+    }
+}
+
+function Sync-InstalledExecutable {
+    $sourceExe = Join-Path $PSScriptRoot "dist\flclash-server.exe"
+    if (-not (Test-Path -LiteralPath $sourceExe)) { return }
+    if ([IO.Path]::GetFullPath($sourceExe) -eq [IO.Path]::GetFullPath($installedExe)) { return }
+    $sourceHash = (Get-FileHash -LiteralPath $sourceExe -Algorithm SHA256).Hash
+    $installedHash = if (Test-Path -LiteralPath $installedExe) {
+        (Get-FileHash -LiteralPath $installedExe -Algorithm SHA256).Hash
+    } else { "" }
+    if ($sourceHash -eq $installedHash) { return }
+
+    Write-Host "检测到服务端程序有更新，正在替换旧版本……" -ForegroundColor Yellow
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($task -and $task.State -eq "Running") {
+        Stop-ScheduledTask -TaskName $taskName
+        Start-Sleep -Milliseconds 500
+    }
+    Stop-InstalledProxyProcesses
+    Copy-Item -LiteralPath $sourceExe -Destination $installedExe -Force
+}
+
 function Test-LANIPv4([string]$Address) {
     $parsed = $null
     if (-not [Net.IPAddress]::TryParse($Address, [ref]$parsed) -or
@@ -89,6 +133,52 @@ function Sync-InstalledLaunchers {
             Copy-Item -LiteralPath $source -Destination $destination -Force
         }
     }
+}
+
+function Register-BackgroundTask {
+    $action = New-ScheduledTaskAction -Execute $installedExe -Argument "-mode flclash-server -config `"$configPath`"" -WorkingDirectory $installDir
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+    $taskPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+    Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $taskPrincipal -Force | Out-Null
+}
+
+function Ensure-FirewallScope {
+    $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    if ([string]$config.listen -notmatch ':(\d+)$') {
+        throw "服务监听地址格式无效：$($config.listen)"
+    }
+    $listenPort = [int]$Matches[1]
+    $ruleName = "TunnelProxy-FlClash-TCP-$listenPort"
+    $rule = Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
+    if (-not $rule) {
+        New-NetFirewallRule -Name $ruleName -DisplayName "TunnelProxy FlClash TCP $listenPort" -Direction Inbound -Action Allow -Protocol TCP -LocalPort $listenPort -Program $installedExe -Profile Any -RemoteAddress LocalSubnet | Out-Null
+        return
+    }
+    $rule | Set-NetFirewallRule -Enabled True -Direction Inbound -Action Allow -Profile Any | Out-Null
+    $rule | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter -RemoteAddress LocalSubnet | Out-Null
+}
+
+function Wait-BackgroundReady {
+    $deadline = [DateTime]::UtcNow.AddSeconds(8)
+    do {
+        Start-Sleep -Milliseconds 250
+        $processes = @(Get-InstalledProxyProcesses)
+        if ($processes.Count -gt 0) {
+            $processIDs = @($processes | ForEach-Object { [int]$_.ProcessId })
+            $listener = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+                Where-Object { $processIDs -contains $_.OwningProcess } |
+                Select-Object -First 1
+            if ($listener) { return $listener }
+        }
+        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+        if ($task.State -ne "Running") { break }
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+    $info = Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction Stop
+    $resultHex = "0x{0:X8}" -f ([uint32]$info.LastTaskResult)
+    throw "后台进程没有成功监听端口。任务状态=$($task.State)，结果=$resultHex。请双击窗口日志入口查看具体错误。"
 }
 
 function Ensure-ClientYaml {
@@ -158,6 +248,7 @@ rules:
 }
 
 function Ensure-Installed {
+    Ensure-SourceBuild
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     if ((Test-Path -LiteralPath $installedExe) -and
         (Test-Path -LiteralPath $configPath) -and
@@ -193,21 +284,23 @@ try {
 
     $Host.UI.RawUI.WindowTitle = "TunnelProxy FlClash Server - $Mode"
     Ensure-Installed
+    Sync-InstalledExecutable
     Sync-InstalledLaunchers
     Ensure-ClientYaml
+    Ensure-FirewallScope
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
 
     if ($Mode -eq "background") {
         if ($task.State -eq "Running") {
-            Write-Host "后台服务已经在运行，无需重复启动。" -ForegroundColor Green
-            Start-Sleep -Seconds 2
-            exit 0
+            Stop-ScheduledTask -TaskName $taskName
+            Start-Sleep -Milliseconds 500
         }
         Stop-InstalledProxyProcesses
+        # 旧安装也会在这里升级任务定义，修复笔记本电池模式和隐式运行模式问题。
+        Register-BackgroundTask
         Start-ScheduledTask -TaskName $taskName
-        Start-Sleep -Milliseconds 500
-        $task = Get-ScheduledTask -TaskName $taskName
-        Write-Host "后台长期服务已启动，当前状态：$($task.State)" -ForegroundColor Green
+        $listener = Wait-BackgroundReady
+        Write-Host "后台长期服务已启动，并已确认监听 $($listener.LocalAddress):$($listener.LocalPort)。" -ForegroundColor Green
         Write-Host "此窗口可以关闭，服务会继续运行。"
         Start-Sleep -Seconds 2
         exit 0
@@ -222,7 +315,7 @@ try {
     Write-Host "窗口日志模式已启动。客户端访问记录会显示在下面。" -ForegroundColor Green
     Write-Host "关闭窗口或按 Ctrl+C 即可停止；需要后台运行时双击后台启动入口。"
     Write-Host ""
-    & $installedExe -config $configPath
+    & $installedExe -mode flclash-server -config $configPath
     if ($LASTEXITCODE -ne 0) {
         throw "服务进程退出，代码：$LASTEXITCODE"
     }

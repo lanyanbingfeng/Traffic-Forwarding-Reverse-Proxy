@@ -101,8 +101,10 @@ try {
 } finally {
     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPtr)
 }
-if ($password.Length -lt 12) { throw "密码至少需要 12 位。" }
-if ($username.Length -gt 255 -or $password.Length -gt 255) { throw "用户名和密码不能超过 255 个字符。" }
+$usernameBytes = [Text.Encoding]::UTF8.GetByteCount($username)
+$passwordBytes = [Text.Encoding]::UTF8.GetByteCount($password)
+if ($passwordBytes -lt 12) { throw "密码的 UTF-8 长度至少需要 12 字节。" }
+if ($usernameBytes -gt 255 -or $passwordBytes -gt 255) { throw "用户名和密码的 UTF-8 长度不能超过 255 字节。" }
 
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 & icacls.exe $installDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
@@ -130,14 +132,18 @@ $fingerprintLine = $initOutput | Where-Object { $_ -like "CERT_SHA256=*" } | Sel
 if (-not $fingerprintLine) { throw "没有获得证书指纹。" }
 $fingerprint = $fingerprintLine.Substring("CERT_SHA256=".Length)
 
-$action = New-ScheduledTaskAction -Execute $installedExe -Argument "-config `"$configPath`""
+$action = New-ScheduledTaskAction -Execute $installedExe -Argument "-mode flclash-server -config `"$configPath`"" -WorkingDirectory $installDir
 $trigger = New-ScheduledTaskTrigger -AtStartup
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
 $taskPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $taskPrincipal -Force | Out-Null
 $firewallRuleName = "TunnelProxy-FlClash-TCP-$listenPort"
-if (-not (Get-NetFirewallRule -Name $firewallRuleName -ErrorAction SilentlyContinue)) {
-    New-NetFirewallRule -Name $firewallRuleName -DisplayName "TunnelProxy FlClash TCP $listenPort" -Direction Inbound -Action Allow -Protocol TCP -LocalPort $listenPort -Program $installedExe -Profile Any | Out-Null
+$firewallRule = Get-NetFirewallRule -Name $firewallRuleName -ErrorAction SilentlyContinue
+if (-not $firewallRule) {
+    $firewallRule = New-NetFirewallRule -Name $firewallRuleName -DisplayName "TunnelProxy FlClash TCP $listenPort" -Direction Inbound -Action Allow -Protocol TCP -LocalPort $listenPort -Program $installedExe -Profile Any -RemoteAddress LocalSubnet
+} else {
+    $firewallRule | Set-NetFirewallRule -Enabled True -Direction Inbound -Action Allow -Profile Any | Out-Null
+    $firewallRule | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter -RemoteAddress LocalSubnet | Out-Null
 }
 Start-ScheduledTask -TaskName $taskName
 

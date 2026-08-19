@@ -5,6 +5,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
@@ -45,8 +46,12 @@ func EnsureCertificate(certFile, keyFile string) (string, error) {
 	if err := cert.VerifyHostname(serverName); err != nil {
 		return "", fmt.Errorf("flclash: 证书不包含 %s SAN: %w", serverName, err)
 	}
-	if _, err := os.Stat(keyFile); err != nil {
-		return "", err
+	now := time.Now()
+	if now.Before(cert.NotBefore) || now.After(cert.NotAfter) {
+		return "", fmt.Errorf("flclash: TLS 证书不在有效期内（%s 至 %s）", cert.NotBefore, cert.NotAfter)
+	}
+	if _, err := tls.LoadX509KeyPair(certFile, keyFile); err != nil {
+		return "", fmt.Errorf("flclash: TLS 证书与私钥不匹配: %w", err)
 	}
 	return formatFingerprint(cert.Raw), nil
 }
