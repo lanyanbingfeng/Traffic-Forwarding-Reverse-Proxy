@@ -20,7 +20,7 @@ function Test-Administrator {
 function Start-ElevatedCopy {
     $windowsPowerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
     $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Mode $Mode"
-    Start-Process -FilePath $windowsPowerShell -Verb RunAs -ArgumentList $arguments | Out-Null
+    Start-Process -FilePath $windowsPowerShell -Verb RunAs -ArgumentList $arguments -WorkingDirectory $PSScriptRoot | Out-Null
 }
 
 function Get-InstalledProxyProcesses {

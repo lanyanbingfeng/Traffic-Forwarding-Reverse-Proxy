@@ -54,14 +54,20 @@ if (-not $goCmd) {
 $outDir = Join-Path $PSScriptRoot "dist"
 New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 
-Write-Host "==> Building client (tunnel-client.exe) ..." -ForegroundColor Cyan
-go build -trimpath -ldflags "-s -w -X main.defaultMode=client" -o (Join-Path $outDir "tunnel-client.exe") .
+function Invoke-RoleBuild([string]$Label, [string]$OutputName, [string]$DefaultMode) {
+    Write-Host "==> Building $Label ($OutputName) ..." -ForegroundColor Cyan
+    & $goCmd.Source -C $PSScriptRoot build -trimpath -ldflags "-s -w -X main.defaultMode=$DefaultMode" -o (Join-Path $outDir $OutputName) .
+    if ($LASTEXITCODE -ne 0) {
+        throw "构建 $OutputName 失败，go build 退出代码：$LASTEXITCODE"
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $outDir $OutputName))) {
+        throw "构建命令没有生成 $OutputName。"
+    }
+}
 
-Write-Host "==> Building server (tunnel-server.exe) ..." -ForegroundColor Cyan
-go build -trimpath -ldflags "-s -w -X main.defaultMode=server" -o (Join-Path $outDir "tunnel-server.exe") .
-
-Write-Host "==> Building FlClash direct server (flclash-server.exe) ..." -ForegroundColor Cyan
-go build -trimpath -ldflags "-s -w -X main.defaultMode=flclash-server" -o (Join-Path $outDir "flclash-server.exe") .
+Invoke-RoleBuild "client" "tunnel-client.exe" "client"
+Invoke-RoleBuild "server" "tunnel-server.exe" "server"
+Invoke-RoleBuild "FlClash direct server" "flclash-server.exe" "flclash-server"
 
 Write-Host ""
 Write-Host "Build OK. Artifacts:" -ForegroundColor Green
