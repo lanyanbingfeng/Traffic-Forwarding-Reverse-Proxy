@@ -1,6 +1,6 @@
-# 跳板机隧道代理配置（FlClash/Mihomo 格式）
-# 仅包含一个 SOCKS5 节点：本机 127.0.0.1:1080 的隧道代理
-# 使用方法：在 FlClash 中 "添加配置" -> 选 "本地文件" / 直接拖入，启用后浏览器流量会经此节点出去
+# FlClash/Mihomo 直连服务端模板。
+# 将下面 4 个 CHANGE_ME 值替换为安装脚本输出的服务器 IP、用户名、密码和证书指纹。
+# mixed-port 固定为 FlClash 默认的 7890，不需要运行 tunnel-client.exe。
 
 mixed-port: 7890
 allow-lan: false
@@ -8,16 +8,23 @@ mode: rule
 log-level: info
 
 proxies:
-  - name: "tunnel-local"
+  - name: "campus-tunnel-53"
     type: socks5
-    server: 127.0.0.1
-    port: 1080
+    server: "CHANGE_ME_SERVER_IP"
+    port: 53
+    username: "CHANGE_ME_USERNAME"
+    password: "CHANGE_ME_PASSWORD"
+    tls: true
+    sni: "tunnel.local"
+    fingerprint: "CHANGE_ME_CERT_SHA256"
+    udp: false
+    ip-version: ipv4
 
 proxy-groups:
   - name: "Proxy"
     type: select
     proxies:
-      - "tunnel-local"
+      - "campus-tunnel-53"
 
 rules:
   - MATCH,Proxy

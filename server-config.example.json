@@ -1,0 +1,10 @@
+{
+  "listen": "0.0.0.0:53",
+  "username": "flclash",
+  "password": "CHANGE_ME_AT_LEAST_12_CHARACTERS",
+  "cert_file": "server.crt",
+  "key_file": "server.key",
+  "handshake_timeout": "15s",
+  "idle_timeout": "10m",
+  "max_connections": 512
+}

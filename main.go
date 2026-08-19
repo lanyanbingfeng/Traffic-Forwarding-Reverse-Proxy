@@ -1,10 +1,12 @@
 // 局域网 53 端口反向代理隧道工具
 //
 // 用法（客户端）：
-//   tunnel-client -server 192.168.1.100:53 [-listen 127.0.0.1:1080] [-key 口令]
+//
+//	tunnel-client -server 192.168.1.100:53 [-listen 127.0.0.1:1080] -key 口令
 //
 // 用法（服务端）：
-//   tunnel-server -listen 0.0.0.0:53 [-key 口令]
+//
+//	tunnel-server -listen 0.0.0.0:53 -key 口令
 package main
 
 import (
@@ -14,19 +16,22 @@ import (
 	"os"
 	"time"
 
+	"tunnelproxy/internal/flclash"
 	"tunnelproxy/internal/socks"
-	"tunnelproxy/internal/transport"
 )
 
 // defaultMode 由编译期 -ldflags -X 注入，用于生成默认角色的二进制。
 var defaultMode string
 
 func main() {
-	mode := flag.String("mode", defaultMode, "运行模式: client 或 server")
+	mode := flag.String("mode", defaultMode, "运行模式: client、server 或 flclash-server")
 	serverAddr := flag.String("server", "", "跳板机地址 (client 模式, 如 192.168.1.100:53)")
 	listenAddr := flag.String("listen", "", "监听地址 (client: 127.0.0.1:1080, server: 0.0.0.0:53)")
-	key := flag.String("key", "", "加密口令 (可选, 两端必须一致)")
+	key := flag.String("key", "", "隧道加密和认证口令 (两端必须一致)")
+	allowInsecure := flag.Bool("allow-insecure", false, "允许服务端无口令运行（不推荐，仅限可信网络）")
 	retry := flag.Int("retry", 5, "client 模式连接失败后的重试间隔秒数")
+	configPath := flag.String("config", "", "flclash-server JSON 配置路径")
+	initOnly := flag.Bool("init-only", false, "仅初始化 FlClash TLS 证书并输出指纹")
 	flag.Parse()
 
 	if *mode == "" {
@@ -39,10 +44,33 @@ func main() {
 	case "client":
 		runClient(*serverAddr, *listenAddr, *key, *retry)
 	case "server":
-		runServer(*listenAddr, *key)
+		runServer(*listenAddr, *key, *allowInsecure)
+	case "flclash-server":
+		runFlClashServer(*configPath, *initOnly)
 	default:
-		fmt.Fprintf(os.Stderr, "错误: 未知模式 %q，仅支持 client/server\n", *mode)
+		fmt.Fprintf(os.Stderr, "错误: 未知模式 %q，仅支持 client/server/flclash-server\n", *mode)
 		os.Exit(1)
+	}
+}
+
+func runFlClashServer(configPath string, initOnly bool) {
+	if configPath == "" {
+		configPath = flclash.DefaultConfigPath()
+	}
+	cfg, err := flclash.LoadConfig(configPath)
+	if err != nil {
+		log.Fatalf("[flclash-server] 配置错误: %v", err)
+	}
+	if initOnly {
+		fingerprint, err := flclash.EnsureCertificate(cfg.CertFile, cfg.KeyFile)
+		if err != nil {
+			log.Fatalf("[flclash-server] 初始化证书失败: %v", err)
+		}
+		fmt.Printf("SNI=tunnel.local\nCERT_SHA256=%s\n", fingerprint)
+		return
+	}
+	if err := flclash.Serve(cfg); err != nil {
+		log.Fatalf("[flclash-server] 启动失败: %v", err)
 	}
 }
 
@@ -56,29 +84,26 @@ func runClient(serverAddr, listenAddr, key string, retry int) {
 		listenAddr = "127.0.0.1:1080"
 	}
 
-	log.Printf("[client] 尝试连接跳板机 %s ...", serverAddr)
-	tunnel, err := transport.Dial(serverAddr, key)
-	if err != nil {
-		if retry > 0 {
-			log.Printf("[client] 连接失败: %v，%d 秒后重试...", err, retry)
-			time.Sleep(time.Duration(retry) * time.Second)
-			runClient(serverAddr, listenAddr, key, retry)
-			return
-		}
-		log.Fatalf("[client] 连接跳板机失败: %v", err)
+	if retry <= 0 {
+		fmt.Fprintln(os.Stderr, "错误: -retry 必须大于 0")
+		os.Exit(1)
 	}
-	defer tunnel.Close()
-	log.Printf("[client] 已连接跳板机 %s", serverAddr)
 
-	if err := socks.ServeLocal(listenAddr, tunnel); err != nil {
+	if err := socks.ServeLocal(listenAddr, serverAddr, key, time.Duration(retry)*time.Second); err != nil {
 		log.Fatalf("[client] 本地监听失败: %v", err)
 	}
 }
 
 // runServer 运行服务端：监听 53 端口并处理隧道会话。
-func runServer(listenAddr, key string) {
+func runServer(listenAddr, key string, allowInsecure bool) {
 	if listenAddr == "" {
 		listenAddr = "0.0.0.0:53"
+	}
+	if key == "" && !allowInsecure {
+		log.Fatal("[server] 为防止成为局域网开放代理，必须设置 -key；如确需明文模式请显式添加 -allow-insecure")
+	}
+	if key == "" {
+		log.Printf("[server] 警告：当前为无认证明文模式，仅应在完全可信的隔离网络使用")
 	}
 	if err := socks.ServeServer(listenAddr, key); err != nil {
 		log.Fatalf("[server] 启动失败: %v", err)

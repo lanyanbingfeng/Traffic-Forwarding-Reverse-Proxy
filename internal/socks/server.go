@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"time"
 
 	"tunnelproxy/internal/transport"
 )
@@ -50,6 +51,8 @@ func handleTunnelConn(conn net.Conn, password string) {
 // s 是 transport.ServerSession，承载来自客户端的原始 SOCKS5 字节流。
 func HandleSession(s net.Conn) {
 	defer s.Close()
+	handshakeTimer := time.AfterFunc(15*time.Second, func() { _ = s.Close() })
+	defer handshakeTimer.Stop()
 
 	// 1. SOCKS5 握手
 	if err := handshake(s); err != nil {
@@ -63,13 +66,14 @@ func HandleSession(s net.Conn) {
 		return
 	}
 	// 3. 建立真实出站连接
-	target, err := net.Dial("tcp", addr)
+	target, err := net.DialTimeout("tcp", addr, 15*time.Second)
 	if err != nil {
 		log.Printf("[server] 连接目标 %s 失败: %v", addr, err)
 		_ = writeReply(s, repHostUnreach)
 		return
 	}
 	defer target.Close()
+	handshakeTimer.Stop()
 
 	// 4. 回发成功应答
 	if err := writeReply(s, repSucceeded); err != nil {
@@ -78,12 +82,18 @@ func HandleSession(s net.Conn) {
 	// 记录访问日志：证明流量经本机(跳板机)代理出网
 	log.Printf("[server] [访问] 客户端 %s 通过隧道访问 -> %s", s.RemoteAddr(), addr)
 
-	// 5. 双向转发（客户端<->目标）
-	done := make(chan struct{})
+	// 5. 双向转发（任一方向结束时关闭两端，避免另一方向永久阻塞）
+	done := make(chan struct{}, 2)
 	go func() {
 		_, _ = io.Copy(target, s)
-		close(done)
+		done <- struct{}{}
 	}()
-	_, _ = io.Copy(s, target)
+	go func() {
+		_, _ = io.Copy(s, target)
+		done <- struct{}{}
+	}()
+	<-done
+	_ = target.Close()
+	_ = s.Close()
 	<-done
 }
