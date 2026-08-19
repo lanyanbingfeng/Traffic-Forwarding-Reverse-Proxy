@@ -1,4 +1,87 @@
-# 局域网 53 端口反向代理隧道工具
+# 局域网 TCP 53 流量转发工具
+
+本项目提供两种互斥的服务模式：
+
+- **FlClash 直连（推荐）**：服务端运行 `flclash-server.exe`，客户端只需导入 YAML 并启动 FlClash；本地端口保持默认 `7890`。
+- **自定义隧道（备用）**：继续使用 `tunnel-client.exe` 和 `tunnel-server.exe`，本地 SOCKS5 端口为 `1080`。
+
+两种服务默认都监听 TCP 53，不能同时启动。以下先介绍推荐的 FlClash 直连方式，原隧道方式保留在后续章节。
+
+## FlClash 直连模式
+
+```text
+FlClash(mixed-port 7890) --[SOCKS5 over TLS / TCP 53]--> 跳板机 --> 互联网
+```
+
+该模式使用标准 SOCKS5、RFC 1929 用户名密码认证和 TLS。客户端不需要运行本项目的任何程序。
+
+### 服务端一次性安装（Windows）
+
+1. 编译三个程序：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File build.ps1
+```
+
+2. 以管理员身份打开 PowerShell，在项目目录运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install-flclash-server.ps1
+```
+
+3. 按提示填写：
+
+   - 监听地址，通常直接回车使用 `0.0.0.0:53`；
+   - 跳板机的稳定局域网 IP，例如 `192.168.0.109`；
+   - SOCKS5 用户名；
+   - 至少 12 位的随机密码。
+
+安装脚本会完成以下操作：
+
+- 安装程序与配置到 `%ProgramData%\TunnelProxy`；
+- 首次生成并持久保存 `tunnel.local` 自签名证书；
+- 锁定配置和私钥的 Windows ACL；
+- 注册并启动 `TunnelProxy-FlClash-Server` 开机计划任务；
+- 添加对应 TCP 监听端口的 Windows 入站防火墙规则；
+- 在当前管理员用户桌面生成 `FlClash-direct.yaml`。
+
+把生成的 YAML 安全地复制到客户端，在 FlClash 中选择“添加配置 → 本地文件”，导入后点击启动，再打开“系统代理”或“虚拟网卡”。YAML 的 `mixed-port` 固定为 `7890`。
+
+### 服务状态管理
+
+```powershell
+# 查看状态（只读）
+powershell -ExecutionPolicy Bypass -File manage-flclash-server.ps1 -Action status
+
+# 启动或停止
+powershell -ExecutionPolicy Bypass -File manage-flclash-server.ps1 -Action start
+powershell -ExecutionPolicy Bypass -File manage-flclash-server.ps1 -Action stop
+```
+
+服务配置文件字段如下：
+
+```json
+{
+  "listen": "0.0.0.0:53",
+  "username": "flclash",
+  "password": "替换为随机密码",
+  "cert_file": "C:\\ProgramData\\TunnelProxy\\server.crt",
+  "key_file": "C:\\ProgramData\\TunnelProxy\\server.key",
+  "handshake_timeout": "15s",
+  "idle_timeout": "10m",
+  "max_connections": 512
+}
+```
+
+也可不安装计划任务，直接运行：
+
+```powershell
+dist\flclash-server.exe -config "C:\ProgramData\TunnelProxy\server.json"
+```
+
+> 第一版仅转发 TCP。YAML 设置了 `udp: false`；网页、HTTPS 和下载可以使用，游戏、语音、QUIC 等依赖 UDP 的流量暂不支持。
+
+## 自定义隧道模式（备用）
 
 利用局域网 DNS 服务端口（**TCP 53**）建立隧道，在本机普通出站端口被封、但 53 端口可用的网络环境下（如校园网、公司网），把本机流量转发到局域网内的一台跳板机，由跳板机真实出网访问互联网。
 
@@ -10,7 +93,7 @@
 ```
 
 - 本机跑**客户端**，监听 `127.0.0.1:1080`（SOCKS5），浏览器/系统代理指向它；
-- 客户端把收到的代理流量封装成隧道帧，经 **TCP 53 端口**发往局域网跳板机；
+- 客户端把收到的代理流量封装成带完整性校验的加密隧道帧，经 **TCP 53 端口**发往局域网跳板机；
 - 跳板机跑**服务端**，监听 53 端口，解帧还原 SOCKS5 请求，建立真实出站连接访问目标，并把响应原路返回。
 
 因为本机与跳板机之间走的是局域网路径，仅端口被限制、内容不检查，所以裸 TCP 走 53 端口吞吐与延迟都接近正常网络，适合日常浏览上网。
@@ -23,8 +106,10 @@
 ├── start-client.bat           # 本机客户端双击启动脚本（按提示输入跳板机IP）
 ├── start-server.bat           # 跳板机服务端双击启动脚本（需管理员运行）
 ├── internal/
-│   ├── transport/             # 53 端口隧道传输层（帧编解码、连接复用、可选加密）
+│   ├── transport/             # 53 端口隧道传输层（帧编解码、连接复用、AES-GCM 加密）
 │   └── socks/                 # SOCKS5 代理层（本地监听 / 服务端会话处理）
+├── install-flclash-server.ps1 # 安装 FlClash 长期服务并生成客户端 YAML
+├── manage-flclash-server.ps1  # 查看、启动或停止 Windows 长期服务
 └── dist/                      # 编译产物（可选，通常不入库，clone 后自行编译）
     ├── tunnel-client
     └── tunnel-server
@@ -71,6 +156,8 @@ go build -trimpath -ldflags "-s -w -X main.defaultMode=server"  -o tunnel-server
 
 两种方式产物等价。生成的 `tunnel-client` / `tunnel-server` 即可直接运行，无需任何依赖。
 
+Windows `build.ps1` 还会生成 `dist/flclash-server.exe`，用于前述 FlClash 直连模式。
+
 ### 第 4 步：部署并运行
 
 把 `tunnel-server` 放到**跳板机**（局域网内能出网的主机），`tunnel-client` 放到**本机**。
@@ -92,7 +179,7 @@ sudo ./tunnel-server -listen 0.0.0.0:53 -key 你的口令
 - **跳板机**：右键 → **以管理员身份运行** `start-server.bat`（监听 53 端口需管理员权限）
 - **本机**：双击 `start-client.bat`，按提示**输入跳板机 IP**（如 `192.168.0.109:53`，直接回车用默认值），即可连上跳板机
 
-> 脚本顶部可设置 `-key` 口令（两端必须一致，无口令留空）。窗口会保持打开显示日志。
+> 启动脚本会提示输入隧道口令，两端必须完全一致。窗口会保持打开显示日志。
 
 ### 第 5 步：本机设置代理
 
@@ -120,16 +207,16 @@ powershell -ExecutionPolicy Bypass -File build.ps1
 
 ```bash
 # Linux/macOS (需 root)
-sudo ./tunnel-server -listen 0.0.0.0:53 [-key 你的口令]
+sudo ./tunnel-server -listen 0.0.0.0:53 -key 你的口令
 
 # Windows (管理员身份)
-tunnel-server.exe -listen 0.0.0.0:53 [-key 你的口令]
+tunnel-server.exe -listen 0.0.0.0:53 -key 你的口令
 ```
 
 ### 3. 客户端（本机）
 
 ```bash
-tunnel-client.exe -server 192.168.1.100:53 [-listen 127.0.0.1:1080] [-key 你的口令]
+tunnel-client.exe -server 192.168.1.100:53 -listen 127.0.0.1:1080 -key 你的口令
 ```
 
 ### 4. 本机设置代理
@@ -151,8 +238,9 @@ tunnel-client.exe -server 192.168.1.100:53 [-listen 127.0.0.1:1080] [-key 你的
 | `-mode` | 运行模式：`client` 或 `server` | 编译期注入 |
 | `-server` | 跳板机地址（仅客户端，如 `192.168.1.100:53`） | 必填 |
 | `-listen` | 监听地址：客户端 `127.0.0.1:1080`；服务端 `0.0.0.0:53` | 见说明 |
-| `-key` | 加密口令（可选，两端**必须一致**，不填则明文传输） | 空 |
+| `-key` | 隧道加密和认证口令，两端**必须一致**；建议使用至少 16 位随机口令 | 空 |
 | `-retry` | 客户端连接失败后的重试间隔（秒） | `5` |
+| `-allow-insecure` | 仅服务端：显式允许无口令明文运行，不推荐 | `false` |
 
 示例：
 
@@ -166,16 +254,17 @@ tunnel-server.exe -listen 0.0.0.0:53 -key mysecret
 
 ## 安全说明
 
-- `-key` 采用 SHA-256 派生的 XOR 混淆加密，用于**抵御同网段简单嗅探**，并做两端口令校验；**并非强加密**，若需高安全请在该链路外加 TLS。
-- 明文模式（不填 `-key`）下，隧道内流量是明文，可被同网段抓包看到。
+- `-key` 使用 SHA-256 派生 AES-256-GCM 密钥。每个帧都有随机 nonce 和认证标签，可防止流量被直接读取或静默篡改；请使用足够长且不可猜测的口令。
+- 服务端默认拒绝空口令，避免意外成为局域网开放代理。只有显式添加 `-allow-insecure` 才能启用无认证明文模式。
 - 口令不一致时，服务端会拒绝客户端接入并给出握手失败提示。
+- 服务端具备访问其所在网络的能力，请通过主机防火墙只允许受信任的客户端 IP 连接 TCP 53。
 
 ## 注意事项
 
 - **53 端口冲突**：如果跳板机开启了系统 DNS 服务占用了 53 端口，服务端无法监听。需要先停用 DNS 服务或用 `-listen` 指定其他端口（此时客户端 `-server` 也要对应改）。
 - **管理员权限**：监听 <1024 端口需要 root/管理员权限，请以对应身份运行服务端。
 - **本机被限制的只是普通端口**：本机到跳板机的 53 端口必须真实可达，否则隧道无法建立。
-- **隧道断开会自动清理**：服务端或客户端一端退出时，所有关联会话会被关闭，浏览器会看到连接断开，重启程序即可恢复。
+- **隧道断开会自动重连**：现有浏览器连接会被关闭，客户端按 `-retry` 指定的间隔重连；连接恢复后刷新网页即可继续使用。
 - 仅用于学习与技术验证，请遵守所在网络的规定与当地法律法规。
 
 ## 常见问题

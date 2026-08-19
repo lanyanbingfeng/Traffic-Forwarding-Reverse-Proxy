@@ -54,9 +54,14 @@ func handshake(rw io.ReadWriter) error {
 	if _, err := io.ReadFull(rw, methods); err != nil {
 		return err
 	}
-	// 选择无认证方法
-	_, err := rw.Write([]byte{version, methodNoAuth})
-	return err
+	for _, method := range methods {
+		if method == methodNoAuth {
+			_, err := rw.Write([]byte{version, methodNoAuth})
+			return err
+		}
+	}
+	_, _ = rw.Write([]byte{version, 0xff})
+	return errors.New("socks: 客户端不支持无认证方法")
 }
 
 // readRequest 解析 CONNECT 请求，返回目标地址与端口。
@@ -72,7 +77,10 @@ func readRequest(rw io.ReadWriter) (addr string, err error) {
 		_ = writeReply(rw, repCmdNotSup)
 		return "", errors.New("socks: 仅支持 CONNECT 命令")
 	}
-	// hdr[2] = RSV，忽略
+	if hdr[2] != 0x00 {
+		_ = writeReply(rw, repGeneralFail)
+		return "", errors.New("socks: RSV 字段必须为 0")
+	}
 
 	var host string
 	switch hdr[3] {
@@ -111,6 +119,9 @@ func readRequest(rw io.ReadWriter) (addr string, err error) {
 		return "", err
 	}
 	port := binary.BigEndian.Uint16(pb[:])
+	if port == 0 {
+		return "", errors.New("socks: 目标端口不能为 0")
+	}
 	return net.JoinHostPort(host, fmt.Sprintf("%d", port)), nil
 }
 

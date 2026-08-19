@@ -31,6 +31,9 @@ type ServerSession struct {
 	id   uint32
 	pr   *io.PipeReader
 	pw   *io.PipeWriter
+	recv chan []byte
+	mu   sync.Mutex
+	dead bool
 	once sync.Once
 }
 
@@ -40,6 +43,7 @@ type ServerSession struct {
 func Accept(conn net.Conn, password string, onSession func(s *ServerSession)) (*ServerTunnel, error) {
 	cipher := NewCipher(password)
 	br := bufio.NewReader(conn)
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	// 读取握手帧
 	hand, err := ReadFrame(br, cipher)
@@ -58,6 +62,7 @@ func Accept(conn net.Conn, password string, onSession func(s *ServerSession)) (*
 	if !ok {
 		reply = []byte("ERR")
 	}
+	_ = conn.SetDeadline(time.Time{})
 	_ = WriteFrame(conn, cipher, Frame{Type: FrameHandshake, ConnID: 0, Payload: reply})
 	if !ok {
 		conn.Close()
@@ -88,8 +93,9 @@ func verifyAuth(cipher *Cipher, got []byte) bool {
 // NewSession 为指定连接 ID 创建服务端会话。
 func (t *ServerTunnel) NewSession(id uint32) *ServerSession {
 	pr, pw := io.Pipe()
-	s := &ServerSession{t: t, id: id, pr: pr, pw: pw}
+	s := &ServerSession{t: t, id: id, pr: pr, pw: pw, recv: make(chan []byte, sessionQueueSize)}
 	t.sessions.Store(id, s)
+	go s.pump()
 	return s
 }
 
@@ -118,11 +124,13 @@ func (t *ServerTunnel) readLoop() {
 				return
 			default:
 			}
-			_, _ = s.pw.Write(f.Payload)
+			if !s.enqueue(f.Payload) {
+				s.Close()
+			}
 		case FrameClose:
 			if v, ok := t.sessions.LoadAndDelete(f.ConnID); ok {
 				s := v.(*ServerSession)
-				_ = s.pw.Close()
+				s.closeIncoming()
 			}
 		}
 	}
@@ -158,7 +166,8 @@ func (t *ServerTunnel) closeAll() {
 	close(t.closeCh)
 	t.sessions.Range(func(k, v interface{}) bool {
 		s := v.(*ServerSession)
-		_ = s.pw.Close()
+		s.closeIncoming()
+		t.sessions.Delete(k)
 		return true
 	})
 	t.conn.Close()
@@ -189,9 +198,42 @@ func (s *ServerSession) Close() error {
 	var err error
 	s.once.Do(func() {
 		s.t.closeSession(s.id)
+		s.closeIncoming()
 		err = s.pr.Close()
 	})
 	return err
+}
+
+func (s *ServerSession) enqueue(p []byte) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dead {
+		return false
+	}
+	select {
+	case s.recv <- p:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *ServerSession) closeIncoming() {
+	s.mu.Lock()
+	if !s.dead {
+		s.dead = true
+		close(s.recv)
+	}
+	s.mu.Unlock()
+}
+
+func (s *ServerSession) pump() {
+	defer s.pw.Close()
+	for p := range s.recv {
+		if _, err := s.pw.Write(p); err != nil {
+			return
+		}
+	}
 }
 
 // LocalAddr 实现 net.Conn。

@@ -30,13 +30,18 @@ type ClientSession struct {
 	id   uint32
 	pr   *io.PipeReader
 	pw   *io.PipeWriter
+	recv chan []byte
+	mu   sync.Mutex
+	dead bool
 	once sync.Once
 }
+
+const sessionQueueSize = 64
 
 // Dial 连接服务端地址并完成认证握手。
 // password 为空表示明文模式。
 func Dial(addr, password string) (*ClientTunnel, error) {
-	conn, err := net.Dial("tcp", addr)
+	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -47,6 +52,7 @@ func Dial(addr, password string) (*ClientTunnel, error) {
 		nextID:  1,
 		closeCh: make(chan struct{}),
 	}
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	// 发送握手帧（口令哈希作为认证标识）
 	if err := WriteFrame(conn, t.cipher, Frame{Type: FrameHandshake, ConnID: 0, Payload: t.authPayload()}); err != nil {
@@ -63,6 +69,7 @@ func Dial(addr, password string) (*ClientTunnel, error) {
 		conn.Close()
 		return nil, errors.New("transport: 服务端握手失败，口令可能不一致")
 	}
+	_ = conn.SetDeadline(time.Time{})
 
 	go t.readLoop()
 	return t, nil
@@ -79,12 +86,21 @@ func (t *ClientTunnel) authPayload() []byte {
 }
 
 // Open 创建一个新会话并分配连接 ID。
-func (t *ClientTunnel) Open() *ClientSession {
+func (t *ClientTunnel) Open() (*ClientSession, error) {
+	if t.closed.Load() {
+		return nil, ErrTunnelClosed
+	}
 	pr, pw := io.Pipe()
 	id := atomic.AddUint32(&t.nextID, 1)
-	s := &ClientSession{t: t, id: id, pr: pr, pw: pw}
+	s := &ClientSession{t: t, id: id, pr: pr, pw: pw, recv: make(chan []byte, sessionQueueSize)}
 	t.sessions.Store(id, s)
-	return s
+	if t.closed.Load() {
+		t.sessions.Delete(id)
+		s.closeIncoming()
+		return nil, ErrTunnelClosed
+	}
+	go s.pump()
+	return s, nil
 }
 
 // readLoop 持续读取隧道帧并分发到对应会话。
@@ -105,13 +121,15 @@ func (t *ClientTunnel) readLoop() {
 					return
 				default:
 				}
-				_, _ = s.pw.Write(f.Payload)
+				if !s.enqueue(f.Payload) {
+					s.Close()
+				}
 			}
 		case FrameClose:
 			if v, ok := t.sessions.Load(f.ConnID); ok {
 				s := v.(*ClientSession)
 				t.sessions.Delete(f.ConnID)
-				_ = s.pw.Close()
+				s.closeIncoming()
 			}
 		}
 	}
@@ -147,7 +165,8 @@ func (t *ClientTunnel) closeAll() {
 	close(t.closeCh)
 	t.sessions.Range(func(k, v interface{}) bool {
 		s := v.(*ClientSession)
-		_ = s.pw.Close()
+		s.closeIncoming()
+		t.sessions.Delete(k)
 		return true
 	})
 	t.conn.Close()
@@ -169,9 +188,42 @@ func (s *ClientSession) Close() error {
 	var err error
 	s.once.Do(func() {
 		s.t.closeSession(s.id)
+		s.closeIncoming()
 		err = s.pr.Close()
 	})
 	return err
+}
+
+func (s *ClientSession) enqueue(p []byte) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dead {
+		return false
+	}
+	select {
+	case s.recv <- p:
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *ClientSession) closeIncoming() {
+	s.mu.Lock()
+	if !s.dead {
+		s.dead = true
+		close(s.recv)
+	}
+	s.mu.Unlock()
+}
+
+func (s *ClientSession) pump() {
+	defer s.pw.Close()
+	for p := range s.recv {
+		if _, err := s.pw.Write(p); err != nil {
+			return
+		}
+	}
 }
 
 // Close 主动关闭隧道连接并清理所有会话。
@@ -179,6 +231,9 @@ func (t *ClientTunnel) Close() error {
 	t.closeAll()
 	return nil
 }
+
+// Done 返回一个在隧道关闭时被关闭的通道。
+func (t *ClientTunnel) Done() <-chan struct{} { return t.closeCh }
 
 // LocalAddr 实现 net.Conn。
 func (s *ClientSession) LocalAddr() net.Addr { return s.t.conn.LocalAddr() }

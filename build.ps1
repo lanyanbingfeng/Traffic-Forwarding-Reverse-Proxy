@@ -5,6 +5,7 @@
 #  Output:
 #     dist/tunnel-client.exe  (defaults to client mode)
 #     dist/tunnel-server.exe  (defaults to server mode)
+#     dist/flclash-server.exe (FlClash direct SOCKS5 over TLS mode)
 # ============================================================
 
 $ErrorActionPreference = "Stop"
@@ -33,9 +34,13 @@ go build -trimpath -ldflags "-s -w -X main.defaultMode=client" -o (Join-Path $ou
 Write-Host "==> Building server (tunnel-server.exe) ..." -ForegroundColor Cyan
 go build -trimpath -ldflags "-s -w -X main.defaultMode=server" -o (Join-Path $outDir "tunnel-server.exe") .
 
+Write-Host "==> Building FlClash direct server (flclash-server.exe) ..." -ForegroundColor Cyan
+go build -trimpath -ldflags "-s -w -X main.defaultMode=flclash-server" -o (Join-Path $outDir "flclash-server.exe") .
+
 Write-Host ""
 Write-Host "Build OK. Artifacts:" -ForegroundColor Green
 Write-Host "  $outDir\tunnel-client.exe  (default client mode)" -ForegroundColor Green
 Write-Host "  $outDir\tunnel-server.exe  (default server mode)" -ForegroundColor Green
+Write-Host "  $outDir\flclash-server.exe (FlClash direct mode)" -ForegroundColor Green
 Write-Host ""
-Write-Host "Note: both binaries are the same program; role can be overridden with -mode client/server." -ForegroundColor DarkYellow
+Write-Host "Note: all binaries are the same program; role can be overridden with -mode." -ForegroundColor DarkYellow
