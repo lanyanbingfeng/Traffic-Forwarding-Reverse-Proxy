@@ -47,7 +47,7 @@ func TestEnsureCertificatePersistsAndContainsSAN(t *testing.T) {
 func TestLoadConfigDefaultsAndRejectsUnknownFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "server.json")
-	if err := os.WriteFile(path, []byte(`{"username":"u","password":"p"}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"username":"u","password":"long-password"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadConfig(path)
@@ -57,11 +57,23 @@ func TestLoadConfigDefaultsAndRejectsUnknownFields(t *testing.T) {
 	if cfg.Listen != "0.0.0.0:53" || cfg.MaxConnections != 512 || cfg.idleTimeout != 10*time.Minute {
 		t.Fatalf("defaults not applied: %#v", cfg)
 	}
-	if err := os.WriteFile(path, []byte(`{"username":"u","password":"p","unknown":true}`), 0600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"username":"u","password":"long-password","unknown":true}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := LoadConfig(path); err == nil {
 		t.Fatal("unknown config field was accepted")
+	}
+	if err := os.WriteFile(path, []byte(`{"username":"u","password":"long-password"} {}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("trailing JSON value was accepted")
+	}
+	if err := os.WriteFile(path, []byte(`{"username":"u","password":"short"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("short password was accepted")
 	}
 }
 
@@ -93,7 +105,7 @@ func TestSOCKS5OverTLSEndToEnd(t *testing.T) {
 	serverRaw, clientRaw := net.Pipe()
 	serverTLS := tls.Server(serverRaw, &tls.Config{Certificates: []tls.Certificate{certificate}})
 	clientTLS := tls.Client(clientRaw, &tls.Config{InsecureSkipVerify: true}) // test-only self-signed certificate
-	cfg := Config{Username: "flclash", Password: "secret", handshakeTimeout: 2 * time.Second, idleTimeout: 2 * time.Second}
+	cfg := Config{Username: "flclash", Password: "secret-enough", handshakeTimeout: 2 * time.Second, idleTimeout: 2 * time.Second}
 	go handleConnection(serverTLS, cfg)
 	defer clientTLS.Close()
 	if err := clientTLS.Handshake(); err != nil {
@@ -149,6 +161,15 @@ func TestConnectRequestSupportsDomainAndIPv6(t *testing.T) {
 	addr, code, err = readConnectRequest(bytes.NewReader(ipv6Request))
 	if err != nil || code != replySucceeded || addr != "[2001:db8::1]:80" {
 		t.Fatalf("IPv6 addr=%q code=%d err=%v", addr, code, err)
+	}
+}
+
+func TestConnectRequestRejectsDomainControlCharacters(t *testing.T) {
+	request := []byte{0x05, commandConnect, 0x00, 0x03, 12}
+	request = append(request, []byte("example.com\n")...)
+	request = append(request, 0x01, 0xbb)
+	if _, _, err := readConnectRequest(bytes.NewReader(request)); err == nil {
+		t.Fatal("domain containing a newline was accepted")
 	}
 }
 

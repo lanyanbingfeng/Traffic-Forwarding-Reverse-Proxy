@@ -1,6 +1,7 @@
 package flclash
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/binary"
@@ -152,8 +153,13 @@ func authenticate(conn io.ReadWriter, username, password string) error {
 	if _, err := io.ReadFull(conn, pass); err != nil {
 		return err
 	}
-	valid := subtle.ConstantTimeCompare(user, []byte(username)) == 1 &&
-		subtle.ConstantTimeCompare(pass, []byte(password)) == 1
+	userHash := sha256.Sum256(user)
+	expectedUserHash := sha256.Sum256([]byte(username))
+	passwordHash := sha256.Sum256(pass)
+	expectedPasswordHash := sha256.Sum256([]byte(password))
+	userValid := subtle.ConstantTimeCompare(userHash[:], expectedUserHash[:])
+	passwordValid := subtle.ConstantTimeCompare(passwordHash[:], expectedPasswordHash[:])
+	valid := userValid&passwordValid == 1
 	status := byte(0x00)
 	if !valid {
 		status = 0x01
@@ -217,6 +223,11 @@ func readHost(r io.Reader, addressType byte) (string, error) {
 		data := make([]byte, int(length[0]))
 		if _, err := io.ReadFull(r, data); err != nil {
 			return "", err
+		}
+		for _, value := range data {
+			if value <= 0x20 || value == 0x7f {
+				return "", errors.New("域名包含非法控制字符")
+			}
 		}
 		return string(data), nil
 	default:
