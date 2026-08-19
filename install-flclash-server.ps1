@@ -8,6 +8,9 @@ $installedExe = Join-Path $installDir "flclash-server.exe"
 $configPath = Join-Path $installDir "server.json"
 $certPath = Join-Path $installDir "server.crt"
 $keyPath = Join-Path $installDir "server.key"
+$launcherSource = Join-Path $PSScriptRoot "launch-flclash-server.ps1"
+$backgroundSource = Join-Path $PSScriptRoot "start-flclash-background.bat"
+$consoleSource = Join-Path $PSScriptRoot "start-flclash-console.bat"
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -16,6 +19,11 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 if (-not (Test-Path -LiteralPath $sourceExe)) {
     throw "未找到 $sourceExe，请先运行 build.ps1。"
+}
+foreach ($requiredFile in @($launcherSource, $backgroundSource, $consoleSource)) {
+    if (-not (Test-Path -LiteralPath $requiredFile)) {
+        throw "未找到启动入口文件：$requiredFile"
+    }
 }
 
 $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
@@ -51,6 +59,9 @@ New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 & icacls.exe $installDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "无法设置服务端配置目录权限。" }
 Copy-Item -LiteralPath $sourceExe -Destination $installedExe -Force
+Copy-Item -LiteralPath $launcherSource -Destination (Join-Path $installDir "launch-flclash-server.ps1") -Force
+Copy-Item -LiteralPath $backgroundSource -Destination (Join-Path $installDir "start-flclash-background.bat") -Force
+Copy-Item -LiteralPath $consoleSource -Destination (Join-Path $installDir "start-flclash-console.bat") -Force
 $config = [ordered]@{
     listen = $listen
     username = $username
@@ -115,11 +126,25 @@ rules:
 "@
 [IO.File]::WriteAllText($yamlPath, $yaml, [Text.UTF8Encoding]::new($false))
 
+$shell = New-Object -ComObject WScript.Shell
+$backgroundShortcut = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath("Desktop")) "代理服务-后台运行.lnk"))
+$backgroundShortcut.TargetPath = Join-Path $installDir "start-flclash-background.bat"
+$backgroundShortcut.WorkingDirectory = $installDir
+$backgroundShortcut.Description = "后台长期运行 FlClash TCP 53 代理服务"
+$backgroundShortcut.Save()
+
+$consoleShortcut = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath("Desktop")) "代理服务-窗口日志.lnk"))
+$consoleShortcut.TargetPath = Join-Path $installDir "start-flclash-console.bat"
+$consoleShortcut.WorkingDirectory = $installDir
+$consoleShortcut.Description = "前台运行代理服务并查看客户端访问日志"
+$consoleShortcut.Save()
+
 Write-Host ""
 Write-Host "FlClash 直连服务端已安装并启动。" -ForegroundColor Green
 Write-Host "计划任务: $taskName"
 Write-Host "防火墙规则: $firewallRuleName"
 Write-Host "服务配置: $configPath"
 Write-Host "客户端 YAML: $yamlPath" -ForegroundColor Cyan
+Write-Host "桌面入口: 代理服务-后台运行 / 代理服务-窗口日志" -ForegroundColor Cyan
 Write-Host "证书指纹: $fingerprint"
 Write-Host "请把 YAML 复制到客户端并导入 FlClash。"

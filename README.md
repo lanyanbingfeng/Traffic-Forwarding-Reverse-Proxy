@@ -47,6 +47,13 @@ powershell -ExecutionPolicy Bypass -File install-flclash-server.ps1
 
 把生成的 YAML 安全地复制到客户端，在 FlClash 中选择“添加配置 → 本地文件”，导入后点击启动，再打开“系统代理”或“虚拟网卡”。YAML 的 `mixed-port` 固定为 `7890`。
 
+安装完成后，服务器桌面会生成两个双击入口：
+
+- `代理服务-后台运行`：无日志窗口，服务在后台长期运行并随系统启动；
+- `代理服务-窗口日志`：暂停后台任务，打开一个实时窗口显示客户端访问的域名和端口。
+
+两个模式都使用 TCP 53，启动其中一个时会自动停止另一个。项目目录也保留了 `start-flclash-background.bat` 和 `start-flclash-console.bat`，可以直接双击使用。首次尚未安装时，双击入口会自动进入一次性配置。
+
 ### 服务状态管理
 
 ```powershell
